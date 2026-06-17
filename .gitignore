@@ -1,0 +1,20 @@
+# Secrets / local config
+.env
+
+# Python virtual env
+.venv/
+venv/
+
+# Python caches
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Vector store data (local Chroma) + any test DBs
+memory_db/
+*_memory_db/
+test_memory_db/
+
+# OS / editor cruft
+.DS_Store
+*.swp

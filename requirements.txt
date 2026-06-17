@@ -1,0 +1,9 @@
+# Core
+mcp[cli]
+sentence-transformers   # local, small embedding model (all-MiniLM-L6-v2)
+
+# Local vector store (VECTOR_BACKEND=local) — default
+chromadb
+
+# Cloud vector store (VECTOR_BACKEND=cloud) — optional, only needed for Qdrant
+qdrant-client
