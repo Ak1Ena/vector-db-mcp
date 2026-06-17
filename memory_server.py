@@ -35,7 +35,20 @@ DB_PATH = os.environ.get("DB_PATH", os.path.join(os.path.dirname(__file__), "mem
 # Cosine similarity in [0, 1]; matches below this are dropped as irrelevant.
 MIN_SCORE = float(os.environ.get("MIN_SCORE", "0.30"))
 
-mcp = FastMCP("db-memory")
+mcp = FastMCP(
+    "db-memory",
+    instructions=(
+        "Long-term memory for solved problems and reusable knowledge. Use this "
+        "instead of writing notes or Memory/knowledge files.\n"
+        "BEFORE starting a task: call search_memory with the user's request. It "
+        "returns headers (id + title + similarity) only; then call "
+        "get_memory(ids=[...]) to fetch full text for just the entries you need.\n"
+        "AFTER solving a problem or producing reusable knowledge: call save_memory "
+        "(problem = what was solved, solution = the fix in reusable detail). It is "
+        "fire-and-forget and reports any failed write on the next call.\n"
+        "Only store durable, reusable knowledge — not conversation-specific details."
+    ),
+)
 
 # One lock serializes all embed + store I/O across the main thread (search) and
 # the background save worker, so the model and the DB are never touched concurrently.
@@ -92,11 +105,15 @@ class ChromaStore:
         if not res["ids"] or not res["ids"][0]:
             return []
         out = []
-        for meta, solution, dist in zip(
-            res["metadatas"][0], res["documents"][0], res["distances"][0]
+        for doc_id, meta, solution, dist in zip(
+            res["ids"][0], res["metadatas"][0], res["documents"][0], res["distances"][0]
         ):
-            out.append((meta["problem"], solution, 1.0 - dist))  # cosine dist -> sim
+            out.append((doc_id, meta["problem"], solution, 1.0 - dist))  # cosine dist -> sim
         return out
+
+    def get(self, ids):
+        res = self.col.get(ids=ids)
+        return list(zip(res["ids"], (m["problem"] for m in res["metadatas"]), res["documents"]))
 
     def count(self) -> int:
         return self.col.count()
@@ -139,7 +156,11 @@ class QdrantStore:
 
     def query(self, vector, top_k):
         hits = self.client.query_points(COLLECTION, query=vector, limit=top_k).points
-        return [(h.payload["problem"], h.payload["solution"], h.score) for h in hits]
+        return [(str(h.id), h.payload["problem"], h.payload["solution"], h.score) for h in hits]
+
+    def get(self, ids):
+        recs = self.client.retrieve(COLLECTION, ids=ids, with_payload=True)
+        return [(str(r.id), r.payload["problem"], r.payload["solution"]) for r in recs]
 
     def count(self) -> int:
         return self.client.count(COLLECTION).count
@@ -240,27 +261,50 @@ def save_memory(problem: str, solution: str) -> str:
 
 
 @mcp.tool()
-def search_memory(query: str, top_k: int = 3) -> str:
-    """Search past solved issues relevant to the current request.
+def search_memory(query: str, top_k: int = 5) -> str:
+    """Search past solved issues — returns lightweight HEADERS only (id +
+    problem title + similarity), NOT the full solutions, to save tokens.
 
-    Call this when the user's question may have been solved before; use any
-    returned solution as context for your answer.
+    Read the headers, then call get_memory(ids=[...]) to fetch the full
+    solution(s) for ONLY the ones you actually need.
 
     Args:
         query: The current user request or problem to look up.
-        top_k: How many past solutions to retrieve (default 3).
+        top_k: How many headers to return (default 5).
     """
     prefix = _drain_failures()
     with _lock:
         hits = store().query(embed(query), top_k)
-    blocks = [
-        f"Past problem: {problem}\nSolution: {solution}\n(similarity {score:.2f})"
-        for problem, solution, score in hits
+    headers = [
+        f"[{doc_id}] {problem[:120]}  (similarity {score:.2f})"
+        for doc_id, problem, _solution, score in hits
         if score >= MIN_SCORE
     ]
-    if not blocks:
+    if not headers:
         return prefix + "No sufficiently relevant past solutions found."
-    return prefix + "\n\n---\n\n".join(blocks)
+    return (
+        prefix
+        + "Matches (headers only — call get_memory with the ids you want):\n"
+        + "\n".join(headers)
+    )
+
+
+@mcp.tool()
+def get_memory(ids: list[str]) -> str:
+    """Fetch the full problem + solution text for memory ids from search_memory.
+
+    Args:
+        ids: One or more memory ids (the [id] shown in search_memory headers).
+    """
+    prefix = _drain_failures()
+    with _lock:
+        rows = store().get(ids)
+    if not rows:
+        return prefix + "No memories found for those ids."
+    return prefix + "\n\n---\n\n".join(
+        f"[{doc_id}] Past problem: {problem}\nSolution: {solution}"
+        for doc_id, problem, solution in rows
+    )
 
 
 @mcp.tool()
