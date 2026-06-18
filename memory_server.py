@@ -46,6 +46,9 @@ mcp = FastMCP(
         "AFTER solving a problem or producing reusable knowledge: call save_memory "
         "(problem = what was solved, solution = the fix in reusable detail). It is "
         "fire-and-forget and reports any failed write on the next call.\n"
+        "CURATE: if a retrieved memory is wrong or stale, fix it with update_memory "
+        "(edit problem/solution in place) or remove it with delete_memory(ids=[...]). "
+        "Keep the store small and accurate rather than letting duplicates pile up.\n"
         "Only store durable, reusable knowledge — not conversation-specific details."
     ),
 )
@@ -115,6 +118,17 @@ class ChromaStore:
         res = self.col.get(ids=ids)
         return list(zip(res["ids"], (m["problem"] for m in res["metadatas"]), res["documents"]))
 
+    def update(self, doc_id, vector, problem, solution) -> None:
+        self.col.update(
+            ids=[doc_id],
+            embeddings=[vector],
+            documents=[solution],
+            metadatas=[{"problem": problem}],
+        )
+
+    def delete(self, ids) -> None:
+        self.col.delete(ids=ids)
+
     def count(self) -> int:
         return self.col.count()
 
@@ -161,6 +175,26 @@ class QdrantStore:
     def get(self, ids):
         recs = self.client.retrieve(COLLECTION, ids=ids, with_payload=True)
         return [(str(r.id), r.payload["problem"], r.payload["solution"]) for r in recs]
+
+    def update(self, doc_id, vector, problem, solution) -> None:
+        from qdrant_client.models import PointStruct
+
+        # Upsert with the same id overwrites the existing point (vector + payload).
+        self.client.upsert(
+            COLLECTION,
+            points=[
+                PointStruct(
+                    id=doc_id,
+                    vector=vector,
+                    payload={"problem": problem, "solution": solution},
+                )
+            ],
+        )
+
+    def delete(self, ids) -> None:
+        from qdrant_client.models import PointIdsList
+
+        self.client.delete(COLLECTION, points_selector=PointIdsList(points=ids))
 
     def count(self) -> int:
         return self.client.count(COLLECTION).count
@@ -305,6 +339,58 @@ def get_memory(ids: list[str]) -> str:
         f"[{doc_id}] Past problem: {problem}\nSolution: {solution}"
         for doc_id, problem, solution in rows
     )
+
+
+@mcp.tool()
+def update_memory(id: str, problem: str | None = None, solution: str | None = None) -> str:
+    """Edit an existing memory in place (e.g. correct or refresh an answer).
+
+    Pass only the field(s) you want to change; the other is kept as-is. If the
+    problem text changes it is re-embedded, so future searches match the new
+    wording. Use the [id] shown by search_memory / get_memory.
+
+    Args:
+        id: The memory id to update.
+        problem: New problem text (omit to keep the existing one).
+        solution: New solution text (omit to keep the existing one).
+    """
+    prefix = _drain_failures()
+    if problem is None and solution is None:
+        return prefix + "Nothing to update: pass a new problem and/or solution."
+    with _lock:
+        rows = store().get([id])
+        if not rows:
+            return prefix + f"No memory found for id {id}."
+        _id, old_problem, old_solution = rows[0]
+        new_problem = problem if problem is not None else old_problem
+        new_solution = solution if solution is not None else old_solution
+        # problem is the embedded/searchable text, so re-embed it on every update.
+        store().update(id, embed(new_problem), new_problem, new_solution)
+    return prefix + f"Updated [{id}]."
+
+
+@mcp.tool()
+def delete_memory(ids: list[str]) -> str:
+    """Permanently delete memories by id — use for out-of-date or wrong entries.
+
+    Get the ids from search_memory / get_memory. This cannot be undone.
+
+    Args:
+        ids: One or more memory ids to delete.
+    """
+    prefix = _drain_failures()
+    with _lock:
+        existing = store().get(ids)
+        found = [r[0] for r in existing]
+        if found:
+            store().delete(found)
+    missing = [i for i in ids if i not in found]
+    parts = []
+    if found:
+        parts.append(f"Deleted {len(found)} memory(ies): {', '.join(found)}.")
+    if missing:
+        parts.append(f"No memory found for: {', '.join(missing)}.")
+    return prefix + (" ".join(parts) or "Nothing to delete.")
 
 
 @mcp.tool()
