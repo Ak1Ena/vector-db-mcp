@@ -16,7 +16,7 @@ when a new request looks similar to something solved before.
 |------|--------------|
 | `search_memory(query, top_k)` | Find past solved issues — returns lightweight **headers** (id + title + similarity) to save tokens |
 | `get_memory(ids)` | Fetch the full problem + solution text for the ids you actually want |
-| `save_memory(problem, solution)` | Store a solved issue for future retrieval (fire-and-forget background write) |
+| `save_memory(problem, solution)` | Store a solved issue for future retrieval (fire-and-forget background write). Claude confirms with you — "Did this solve your problem?" — before saving |
 | `update_memory(id, problem?, solution?)` | Edit a memory in place; re-embeds if the problem text changes |
 | `delete_memory(ids)` | Permanently remove out-of-date or wrong entries |
 | `memory_stats()` | Show active backend + how many memories are stored |

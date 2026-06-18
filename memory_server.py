@@ -43,7 +43,11 @@ mcp = FastMCP(
         "BEFORE starting a task: call search_memory with the user's request. It "
         "returns headers (id + title + similarity) only; then call "
         "get_memory(ids=[...]) to fetch full text for just the entries you need.\n"
-        "AFTER solving a problem or producing reusable knowledge: call save_memory "
+        "CONFIRM BEFORE SAVING: when you believe your answer has solved the "
+        "user's problem, ask them to confirm — e.g. 'Did this solve your "
+        "problem?' — and only call save_memory once they confirm it's resolved. "
+        "Do not save on your own assumption that it worked.\n"
+        "AFTER the user confirms (or asks you to remember it): call save_memory "
         "(problem = what was solved, solution = the fix in reusable detail). It is "
         "fire-and-forget and reports any failed write on the next call.\n"
         "CURATE: if a retrieved memory is wrong or stale, fix it with update_memory "
@@ -284,10 +288,12 @@ atexit.register(_flush_on_exit)
 def save_memory(problem: str, solution: str) -> str:
     """Store a solved issue and its solution for future retrieval.
 
-    Call this after you resolve a user's problem, so it can be resurfaced
-    if a similar problem comes up later. This returns immediately; the write
-    happens in the background. If a prior background write failed, this call
-    reports it (with the failed topic).
+    Call this only AFTER the user has confirmed your answer solved their
+    problem (ask "Did this solve your problem?" first) or explicitly asked you
+    to remember it — don't save on the assumption that it worked. It can then be
+    resurfaced if a similar problem comes up later. This returns immediately;
+    the write happens in the background. If a prior background write failed,
+    this call reports it (with the failed topic).
 
     Args:
         problem: A short description of the problem that was solved.
