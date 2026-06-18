@@ -129,6 +129,10 @@ class ChromaStore:
     def delete(self, ids) -> None:
         self.col.delete(ids=ids)
 
+    def scan(self, limit=500):
+        res = self.col.get(limit=limit)
+        return list(zip(res["ids"], (m["problem"] for m in res["metadatas"]), res["documents"]))
+
     def count(self) -> int:
         return self.col.count()
 
@@ -195,6 +199,10 @@ class QdrantStore:
         from qdrant_client.models import PointIdsList
 
         self.client.delete(COLLECTION, points_selector=PointIdsList(points=ids))
+
+    def scan(self, limit=500):
+        points, _ = self.client.scroll(COLLECTION, limit=limit, with_payload=True)
+        return [(str(p.id), p.payload["problem"], p.payload["solution"]) for p in points]
 
     def count(self) -> int:
         return self.client.count(COLLECTION).count
@@ -408,5 +416,32 @@ def memory_stats() -> str:
     )
 
 
+# ---------------------------------------------------------------- web dashboard
+# Read-only data the optional web UI (web_ui.py) serves. All store access goes
+# through _lock, same as the tools, so the web thread never races the DB.
+def _web_memories() -> list[dict]:
+    with _lock:
+        rows = store().scan(500)
+    return [{"id": i, "problem": p, "solution": s} for i, p, s in rows]
+
+
+def _web_stats() -> dict:
+    with _lock:
+        count = store().count()
+    return {
+        "backend": BACKEND,
+        "collection": COLLECTION,
+        "model": EMBED_MODEL,
+        "count": count,
+        "pending_writes": _save_queue.qsize(),
+    }
+
+
 if __name__ == "__main__":
+    # Optional read-only dashboard. Off unless WEB_UI=on; autostarts with the
+    # server (which Claude Code launches), on WEB_PORT. Never blocks MCP — it
+    # runs in a daemon thread and only logs to stderr.
+    import web_ui
+
+    web_ui.start(_web_memories, _web_stats)
     mcp.run()

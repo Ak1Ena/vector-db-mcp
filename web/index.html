@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<!--
+  db-memory dashboard template — read-only viewer for the vector store.
+  Edit this file freely; the server (web_ui.py) just serves it as-is and
+  exposes two JSON endpoints it calls:
+     GET /api/stats     -> { backend, collection, model, count, pending_writes }
+     GET /api/memories  -> [ { id, problem, solution }, ... ]
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>db-memory</title>
+  <style>
+    :root {
+      --bg: #0f1115; --panel: #171a21; --border: #262b36;
+      --text: #e6e8ee; --muted: #8b93a4; --accent: #6ea8fe;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; background: var(--bg); color: var(--text);
+      font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+    }
+    header {
+      position: sticky; top: 0; background: var(--bg);
+      border-bottom: 1px solid var(--border); padding: 16px 20px; z-index: 5;
+    }
+    .title { font-size: 18px; font-weight: 650; }
+    .title span { color: var(--accent); }
+    .stats { color: var(--muted); font-size: 12.5px; margin-top: 4px; }
+    .controls { display: flex; gap: 10px; margin-top: 12px; flex-wrap: wrap; }
+    input[type=search] {
+      flex: 1; min-width: 200px; background: var(--panel); color: var(--text);
+      border: 1px solid var(--border); border-radius: 8px; padding: 9px 12px; outline: none;
+    }
+    input[type=search]:focus { border-color: var(--accent); }
+    button, label.toggle {
+      background: var(--panel); color: var(--text); border: 1px solid var(--border);
+      border-radius: 8px; padding: 9px 12px; cursor: pointer; user-select: none;
+    }
+    button:hover { border-color: var(--accent); }
+    label.toggle { display: flex; align-items: center; gap: 6px; color: var(--muted); }
+    main { padding: 16px 20px 60px; max-width: 1000px; margin: 0 auto; }
+    .card {
+      background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+      padding: 14px 16px; margin-bottom: 12px;
+    }
+    .problem { font-weight: 600; margin-bottom: 6px; }
+    .solution { color: var(--muted); white-space: pre-wrap; }
+    .id { font: 11px ui-monospace, monospace; color: #5b6270; margin-top: 8px; }
+    .empty { color: var(--muted); text-align: center; padding: 48px 0; }
+    mark { background: #3a4256; color: var(--text); border-radius: 3px; }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="title">db&#8209;<span>memory</span> &middot; vector store viewer</div>
+    <div class="stats" id="stats">loading…</div>
+    <div class="controls">
+      <input id="q" type="search" placeholder="Filter by problem or solution…" autocomplete="off" />
+      <button id="refresh">Refresh</button>
+      <label class="toggle"><input id="auto" type="checkbox" /> auto&#8209;refresh</label>
+    </div>
+  </header>
+  <main id="list"><div class="empty">loading…</div></main>
+
+  <script>
+    let memories = [];
+    let timer = null;
+
+    const esc = (s) => String(s ?? "").replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+    function hl(text, q) {
+      const e = esc(text);
+      if (!q) return e;
+      try { return e.replace(new RegExp("(" + q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + ")", "ig"), "<mark>$1</mark>"); }
+      catch { return e; }
+    }
+
+    async function load() {
+      try {
+        const [s, m] = await Promise.all([
+          fetch("/api/stats").then(r => r.json()),
+          fetch("/api/memories").then(r => r.json()),
+        ]);
+        memories = Array.isArray(m) ? m : [];
+        document.getElementById("stats").textContent =
+          `backend: ${s.backend} · collection: ${s.collection} · model: ${s.model} · ` +
+          `${s.count} stored · ${s.pending_writes} pending write(s)`;
+        render();
+      } catch (e) {
+        document.getElementById("stats").textContent = "error contacting server: " + e;
+      }
+    }
+
+    function render() {
+      const q = document.getElementById("q").value.trim().toLowerCase();
+      const rows = q
+        ? memories.filter(x => (x.problem + " " + x.solution).toLowerCase().includes(q))
+        : memories;
+      const list = document.getElementById("list");
+      if (!rows.length) {
+        list.innerHTML = `<div class="empty">${memories.length ? "No matches." : "No memories stored yet."}</div>`;
+        return;
+      }
+      const qy = document.getElementById("q").value.trim();
+      list.innerHTML = rows.map(x => `
+        <div class="card">
+          <div class="problem">${hl(x.problem, qy)}</div>
+          <div class="solution">${hl(x.solution, qy)}</div>
+          <div class="id">${esc(x.id)}</div>
+        </div>`).join("");
+    }
+
+    document.getElementById("q").addEventListener("input", render);
+    document.getElementById("refresh").addEventListener("click", load);
+    document.getElementById("auto").addEventListener("change", (e) => {
+      clearInterval(timer);
+      if (e.target.checked) timer = setInterval(load, 5000);
+    });
+
+    load();
+  </script>
+</body>
+</html>
